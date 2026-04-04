@@ -11,7 +11,7 @@ const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 fal.config({ credentials: process.env.FAL_API_KEY });
 
 const VARIANTS = {
-  all: 'NARA Inhaler 3 variants: Sleep (purple moon, lavender cedarwood vetiver chamomile), Focus (green crosshair, peppermint rosemary lemon eucalyptus), Glow (gold sun, bergamot orange ylang ylang geranium). Matte black cylindrical inhaler with keychain, gold engraving. Premium Malaysian aromatherapy.',
+  all: 'NARA Inhaler 3 variants: Sleep (purple moon icon, lavender cedarwood vetiver chamomile), Focus (green crosshair icon, peppermint rosemary lemon eucalyptus), Glow (gold sun icon, bergamot orange ylang ylang geranium). Matte black cylindrical inhaler with keychain, gold engraving. Premium Malaysian aromatherapy brand.',
   sleep: 'NARA Sleep inhaler. Purple gradient with moon icon. Scent: lavender, cedarwood, vetiver, chamomile. For deep relaxation and better sleep.',
   focus: 'NARA Focus inhaler. Forest green with crosshair icon. Scent: peppermint, rosemary, lemon, eucalyptus. For concentration and mental clarity.',
   glow: 'NARA Glow inhaler. Warm gold with sun icon. Scent: bergamot, orange, ylang ylang, geranium. For uplifting mood and positive energy.'
@@ -28,76 +28,78 @@ app.post('/generate-prompts', async (req, res) => {
     if (image) content.push({ type:'image', source:{ type:'base64', media_type:'image/jpeg', data:image }});
     content.push({ type:'text', text: `Product: ${VARIANTS[variant]||VARIANTS.all}
 Platform: ${platform}
-Style direction: ${styleHint||'varied creative angles'}
-Seed for variation: ${seed}
-Generate exactly ${n} distinct, creative video prompts for AI image-to-video tools.
-Each prompt should be 60-80 words describing specific camera movement, lighting, scene, mood, and action.
-Make them varied and different from each other.
-No repeated angles.` });
+Style focus: ${styleHint||'varied creative angles'}
+Variation seed: ${seed}
+Generate exactly ${n} distinct creative video prompts for AI image-to-video.
+Each 60-80 words: describe camera movement, lighting, scene setting, mood, and subject action.
+Make them varied - no repeated angles or concepts.` });
 
     const msg = await anthropic.messages.create({
-      model: 'claude-sonnet-4-20250514',
-      max_tokens: 2500,
-      system: `Return ONLY a valid JSON array with exactly ${n} objects. No markdown, no code blocks, no explanation.
-Each object must have: {"type":"short label max 4 words","platform":"${platform}","prompt":"60-80 words, simple English, no quotes, no special characters, no apostrophes"}`,
+      model: 'claude-sonnet-4-20250514', max_tokens: 2500,
+      system: `Return ONLY a JSON array with exactly ${n} objects. No markdown, no code blocks.
+Each: {"type":"label max 4 words","platform":"${platform}","prompt":"60-80 words, simple English, no quotes, no apostrophes, no special characters"}`,
       messages: [{ role:'user', content }]
     });
-
-    let raw = msg.content.map(b => b.text||'').join('').trim();
+    let raw = msg.content.map(b=>b.text||'').join('').trim();
     raw = raw.replace(/```json/gi,'').replace(/```/g,'').trim();
-    const s = raw.indexOf('['), e = raw.lastIndexOf(']');
-    if (s !== -1 && e !== -1) raw = raw.substring(s, e+1);
+    const s=raw.indexOf('['),e=raw.lastIndexOf(']');
+    if(s!==-1&&e!==-1) raw=raw.substring(s,e+1);
     raw = raw.replace(/[\x00-\x1F\x7F]/g,' ');
-    res.json({ success:true, prompts: JSON.parse(raw) });
+    res.json({ success:true, prompts:JSON.parse(raw) });
   } catch(err) {
     console.error('Prompts error:', err.message);
-    res.status(500).json({ success:false, error: err.message });
+    res.status(500).json({ success:false, error:err.message });
   }
 });
 
-// Generate video using fal-ai/client
+// Generate video
 app.post('/generate-video', async (req, res) => {
   try {
     const { image, prompt } = req.body;
-    console.log('Video: uploading image...');
+    console.log('Video: uploading product image...');
     const buf = Buffer.from(image, 'base64');
     const blob = new Blob([buf], { type:'image/jpeg' });
     const imageUrl = await fal.storage.upload(blob);
     console.log('Video: image uploaded -', imageUrl);
 
-    console.log('Video: submitting job...');
+    console.log('Video: submitting to minimax...');
     const result = await fal.subscribe('fal-ai/minimax-video/image-to-video', {
       input: { image_url: imageUrl, prompt: prompt, duration: 5 },
       logs: true,
       onQueueUpdate: (u) => console.log('Queue:', u.status)
     });
-
     const videoUrl = result.data?.video?.url || result.video?.url;
-    if (!videoUrl) throw new Error('No video URL: ' + JSON.stringify(result).substring(0,300));
+    if (!videoUrl) throw new Error('No video URL: ' + JSON.stringify(result).substring(0,200));
     console.log('Video ready:', videoUrl);
     res.json({ success:true, videoUrl });
   } catch(err) {
     console.error('Video error:', err.message);
-    res.status(500).json({ success:false, error: err.message });
+    res.status(500).json({ success:false, error:err.message });
   }
 });
 
-// Generate image using flux-pro (better prompt following)
+// Generate image - dengan proper image-to-image support
 app.post('/generate-image', async (req, res) => {
   try {
     const { prompt, imageSize='square_hd', refImage } = req.body;
-    console.log('Image: generating with flux-pro...');
-    console.log('Prompt:', prompt.substring(0,100));
+    console.log('Image: prompt =', prompt.substring(0,80));
+    console.log('Image: has reference =', !!refImage);
 
     let result;
+
     if (refImage) {
-      const buf = Buffer.from(refImage, 'base64');
-      const blob = new Blob([buf], { type:'image/jpeg' });
-      const refUrl = await fal.storage.upload(blob);
-      // Use flux-pro with image reference
-      result = await fal.subscribe('fal-ai/flux-pro/v1.1', {
+      // Ada gambar reference - guna flux dengan image reference
+      console.log('Image: uploading reference image...');
+      const refBuf = Buffer.from(refImage, 'base64');
+      const refBlob = new Blob([refBuf], { type:'image/jpeg' });
+      const refUrl = await fal.storage.upload(refBlob);
+      console.log('Image: reference uploaded -', refUrl);
+
+      // Guna flux-pro dengan reference - image_url untuk guide composition
+      result = await fal.subscribe('fal-ai/flux-pro/v1.1-ultra', {
         input: {
           prompt: prompt,
+          image_url: refUrl,
           image_size: imageSize,
           num_images: 1,
           safety_tolerance: '5',
@@ -106,7 +108,8 @@ app.post('/generate-image', async (req, res) => {
         logs: true
       });
     } else {
-      result = await fal.subscribe('fal-ai/flux-pro/v1.1', {
+      // Tiada reference - text-to-image biasa
+      result = await fal.subscribe('fal-ai/flux-pro/v1.1-ultra', {
         input: {
           prompt: prompt,
           image_size: imageSize,
@@ -119,12 +122,36 @@ app.post('/generate-image', async (req, res) => {
     }
 
     const imageUrl = result.data?.images?.[0]?.url || result.images?.[0]?.url;
-    if (!imageUrl) throw new Error('No image: ' + JSON.stringify(result).substring(0,300));
+    if (!imageUrl) throw new Error('No image URL: ' + JSON.stringify(result).substring(0,300));
     console.log('Image ready:', imageUrl);
     res.json({ success:true, imageUrl });
   } catch(err) {
     console.error('Image error:', err.message);
-    res.status(500).json({ success:false, error: err.message });
+    // Fallback to standard flux if ultra fails
+    try {
+      console.log('Trying fallback flux/dev...');
+      const { prompt, imageSize='square_hd', refImage } = req.body;
+      let fbResult;
+      if (refImage) {
+        const refBuf = Buffer.from(refImage, 'base64');
+        const refBlob = new Blob([refBuf], { type:'image/jpeg' });
+        const refUrl = await fal.storage.upload(refBlob);
+        fbResult = await fal.subscribe('fal-ai/flux/dev/image-to-image', {
+          input: { prompt, image_url: refUrl, strength: 0.75, image_size: imageSize, num_images: 1 },
+          logs: true
+        });
+      } else {
+        fbResult = await fal.subscribe('fal-ai/flux/dev', {
+          input: { prompt, image_size: imageSize, num_images: 1 },
+          logs: true
+        });
+      }
+      const fbUrl = fbResult.data?.images?.[0]?.url || fbResult.images?.[0]?.url;
+      if (!fbUrl) throw new Error('Fallback also failed');
+      res.json({ success:true, imageUrl: fbUrl });
+    } catch(fbErr) {
+      res.status(500).json({ success:false, error: err.message + ' | Fallback: ' + fbErr.message });
+    }
   }
 });
 
